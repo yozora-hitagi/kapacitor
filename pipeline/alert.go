@@ -317,6 +317,9 @@ type AlertNodeData struct {
 	// tick:ignore
 	LogHandlers []*LogHandler `tick:"Log" json:"log"`
 
+	//one log one file , handler
+	MlogHandlers []*MlogHandler `tick:"Mlog" json:"mlog"`
+
 	// Send alert to VictorOps.
 	// tick:ignore
 	VictorOpsHandlers []*VictorOpsHandler `tick:"VictorOps" json:"victorOps"`
@@ -772,6 +775,29 @@ type LogHandler struct {
 
 	// Absolute path the the log file.
 	// It will be created if it does not exist.
+	// tick:ignore
+	FilePath string `json:"filePath"`
+
+	// File's mode and permissions, default is 0600
+	// NOTE: The leading 0 is required to interpret the value as an octal integer.
+	Mode int64 `json:"mode"`
+}
+
+func (a *AlertNodeData) Mlog(filepath string) *MlogHandler {
+	log := &MlogHandler{
+		AlertNodeData: a,
+		FilePath:  filepath,
+	}
+	a.MlogHandlers = append(a.MlogHandlers, log)
+	return log
+}
+
+// tick:embedded:AlertNode.Log
+type MlogHandler struct {
+	*AlertNodeData `json:"-"`
+
+	// Absolute path the the log file.
+	// file dir  should exists
 	// tick:ignore
 	FilePath string `json:"filePath"`
 
