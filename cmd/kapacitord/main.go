@@ -36,6 +36,10 @@ func init() {
 }
 
 func main() {
+	//这个位置设置与否感觉 性能测试没变化，不晓得是程序哪里设置了。还是啥意思。
+	//ncpu := runtime.NumCPU()
+	//runtime.GOMAXPROCS(ncpu)
+
 	rand.Seed(time.Now().UnixNano())
 
 	m := NewMain()

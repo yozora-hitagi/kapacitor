@@ -250,6 +250,11 @@ type AlertNodeData struct {
 	// Filter expression for reseting the CRITICAL alert level to lower level.
 	CritReset *ast.LambdaNode `json:"critReset"`
 
+	//自定义级别
+	//FreeLevels string `json:freeLevels`
+	//自定义处理等
+	FreeWarn string `json:"freeWarn`
+
 	//tick:ignore
 	UseFlapping bool `tick:"Flapping" json:"useFlapping"`
 	//tick:ignore
@@ -317,8 +322,11 @@ type AlertNodeData struct {
 	// tick:ignore
 	LogHandlers []*LogHandler `tick:"Log" json:"log"`
 
-	//one log one file , handler
+	//一条日志一个文件
 	MlogHandlers []*MlogHandler `tick:"Mlog" json:"mlog"`
+
+	//为压力测试而添加的工具
+	PlogHandlers []*PlogHandler `tick:"Plog" json:"plog"`
 
 	// Send alert to VictorOps.
 	// tick:ignore
@@ -786,7 +794,7 @@ type LogHandler struct {
 func (a *AlertNodeData) Mlog(filepath string) *MlogHandler {
 	log := &MlogHandler{
 		AlertNodeData: a,
-		FilePath:  filepath,
+		FilePath:      filepath,
 	}
 	a.MlogHandlers = append(a.MlogHandlers, log)
 	return log
@@ -794,6 +802,29 @@ func (a *AlertNodeData) Mlog(filepath string) *MlogHandler {
 
 // tick:embedded:AlertNode.Log
 type MlogHandler struct {
+	*AlertNodeData `json:"-"`
+
+	// Absolute path the the log file.
+	// file dir  should exists
+	// tick:ignore
+	FilePath string `json:"filePath"`
+
+	// File's mode and permissions, default is 0600
+	// NOTE: The leading 0 is required to interpret the value as an octal integer.
+	Mode int64 `json:"mode"`
+}
+
+func (a *AlertNodeData) Plog(filepath string) *PlogHandler {
+	log := &PlogHandler{
+		AlertNodeData: a,
+		FilePath:      filepath,
+	}
+	a.PlogHandlers = append(a.PlogHandlers, log)
+	return log
+}
+
+// tick:embedded:AlertNode.Log
+type PlogHandler struct {
 	*AlertNodeData `json:"-"`
 
 	// Absolute path the the log file.

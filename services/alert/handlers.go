@@ -115,6 +115,34 @@ func (h *mlogHandler) Handle(event alert.Event) {
 	}
 }
 
+type plogHandler struct {
+	logpath string
+	mode    os.FileMode
+	diag    HandlerDiagnostic
+
+	count int64
+}
+
+func NewPlogHandler(c LogHandlerConfig, d HandlerDiagnostic) (alert.Handler, error) {
+	if err := c.Validate(); err != nil {
+		return nil, err
+	}
+	return &plogHandler{
+		logpath: c.Path,
+		mode:    c.Mode,
+		diag:    d,
+		count:   0,
+	}, nil
+}
+
+func (h *plogHandler) Handle(event alert.Event) {
+
+	ad := event.AlertData()
+	h.count++
+	fmt.Printf("%s %d %s\n", ad.ID, h.count, time.Now())
+
+}
+
 type ExecHandlerConfig struct {
 	Prog      string            `mapstructure:"prog"`
 	Args      []string          `mapstructure:"args"`

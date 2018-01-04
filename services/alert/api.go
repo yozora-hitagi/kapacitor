@@ -10,9 +10,9 @@ import (
 	"sort"
 	"strings"
 
-	jsonpatch "github.com/evanphx/json-patch"
+	"github.com/evanphx/json-patch"
 	"github.com/influxdata/kapacitor/alert"
-	client "github.com/influxdata/kapacitor/client/v1"
+	"github.com/influxdata/kapacitor/client/v1"
 	"github.com/influxdata/kapacitor/services/httpd"
 )
 
@@ -35,13 +35,15 @@ const (
 
 	eventsRelation   = "events"
 	handlersRelation = "handlers"
+
+	levelsPath = alertsPath + "/levels"
 )
 
 type apiServer struct {
-	Registrar    HandlerSpecRegistrar
-	Topics       Topics
-	Persister    TopicPersister
-	routes       []httpd.Route
+	Registrar HandlerSpecRegistrar
+	Topics    Topics
+	Persister TopicPersister
+	routes    []httpd.Route
 	HTTPDService interface {
 		AddRoutes([]httpd.Route) error
 		DelRoutes([]httpd.Route)
@@ -88,6 +90,19 @@ func (s *apiServer) Open() error {
 			Pattern:     topicsPathAnchored,
 			HandlerFunc: httpd.ServeOptions,
 		},
+
+		{
+			// 读取级别
+			Method:      "GET",
+			Pattern:     levelsPath,
+			HandlerFunc: s.handleLevelsGet,
+		},
+		{
+			// 设置级别
+			Method:      "POST",
+			Pattern:     levelsPath,
+			HandlerFunc: s.handleLevelsSet,
+		},
 	}
 
 	return s.HTTPDService.AddRoutes(s.routes)
@@ -105,6 +120,59 @@ type sortedTopics []client.Topic
 func (s sortedTopics) Len() int               { return len(s) }
 func (s sortedTopics) Less(i int, j int) bool { return s[i].ID < s[j].ID }
 func (s sortedTopics) Swap(i int, j int)      { s[i], s[j] = s[j], s[i] }
+
+func (s *apiServer) handleLevelsGet(w http.ResponseWriter, r *http.Request) {
+	w.WriteHeader(http.StatusOK)
+	w.Write(httpd.MarshalJSON(alert.LevelStringsGet(), false))
+}
+
+func LevelStringsLoad() {
+	a, err := alertInfoDAO.Get(levelprefix)
+	if err != nil {
+		return
+	}
+	var levels []string
+	err = json.Unmarshal([]byte(a.Info), &levels)
+	if err != nil {
+		return
+	}
+	alert.LevelStringsUpdate(levels)
+}
+func (s *apiServer) handleLevelsSet(w http.ResponseWriter, r *http.Request) {
+	dec := json.NewDecoder(r.Body)
+	var levels []string
+	err := dec.Decode(&levels)
+	if err != nil {
+		httpd.HttpError(w, "invalid JSON", true, http.StatusBadRequest)
+		return
+	}
+
+	b, err := json.Marshal(levels)
+	//var buf bytes.Buffer
+	//enc := gob.NewEncoder(&buf)
+	//err = enc.Encode(levels)
+	if err != nil {
+		httpd.HttpError(w, "store encode Levels JSON", true, http.StatusBadRequest)
+		return
+	}
+
+	a := AlertInfo{
+		ID:   levelprefix,
+		Info: string(b),
+	}
+	err = alertInfoDAO.Put(a)
+	if err != nil {
+		if err != nil {
+			httpd.HttpError(w, "store Levels JSON", true, http.StatusBadRequest)
+			return
+		}
+	}
+
+	alert.LevelStringsUpdate(levels)
+
+	w.WriteHeader(http.StatusOK)
+	w.Write(httpd.MarshalJSON(alert.LevelStringsGet(), false))
+}
 
 func (s *apiServer) handleListTopics(w http.ResponseWriter, r *http.Request) {
 	pattern := r.URL.Query().Get("pattern")

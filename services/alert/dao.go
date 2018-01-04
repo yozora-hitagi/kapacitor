@@ -12,6 +12,71 @@ import (
 	"github.com/pkg/errors"
 )
 
+const alertInfoPrefix = "alertinfo"
+
+var alertInfoDAO AlertInfoDAO
+
+func GetAlertInfoDAO() AlertInfoDAO {
+	return alertInfoDAO
+}
+
+type AlertInfo struct {
+	ID   string `json:"id"`
+	Info string `json:"info"`
+}
+
+func (ai AlertInfo) ObjectID() string {
+	return ai.ID
+}
+
+func (ai AlertInfo) MarshalBinary() ([]byte, error) {
+	return json.Marshal(ai)
+
+}
+
+func (ai *AlertInfo) UnmarshalBinary(data []byte) error {
+	return json.Unmarshal(data, ai)
+}
+
+type AlertInfoKV struct {
+	store *storage.IndexedStore
+}
+
+func newAlertInfoKV(store storage.Interface) (*AlertInfoKV, error) {
+	c := storage.DefaultIndexedStoreConfig(alertInfoPrefix, func() storage.BinaryObject {
+		return new(AlertInfo)
+	})
+	istore, err := storage.NewIndexedStore(store, c)
+	if err != nil {
+		return nil, err
+	}
+	return &AlertInfoKV{
+		store: istore,
+	}, nil
+}
+
+type AlertInfoDAO interface {
+	Get(id string) (AlertInfo, error)
+	Put(a AlertInfo) error
+}
+
+func (kv AlertInfoKV) Get(id string) (AlertInfo, error) {
+	o, err := kv.store.Get(id)
+	if err != nil {
+		return AlertInfo{}, err
+	}
+	t, ok := o.(*AlertInfo)
+	if !ok {
+		return AlertInfo{}, fmt.Errorf("impossible error, object not a AlertInfo, got %T", o)
+	}
+	return *t, nil
+}
+func (kv AlertInfoKV) Put(a AlertInfo) error {
+	return kv.store.Put(&a)
+}
+
+////////////////////////////////
+
 var (
 	ErrHandlerSpecExists   = errors.New("handler spec already exists")
 	ErrNoHandlerSpecExists = errors.New("no handler spec exists")

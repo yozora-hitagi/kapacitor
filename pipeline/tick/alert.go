@@ -111,6 +111,18 @@ func (n *AlertNode) Build(a *pipeline.AlertNode) (ast.Node, error) {
 		}
 	}
 
+	for _, h := range a.PlogHandlers {
+		n.Dot("plog", h.FilePath)
+		if h.Mode != 0 {
+			mode := &ast.NumberNode{
+				IsInt: true,
+				Int64: h.Mode,
+				Base:  8,
+			}
+			n.Dot("mode", mode)
+		}
+	}
+
 	for _, h := range a.VictorOpsHandlers {
 		n.Dot("victorOps").
 			Dot("routingKey", h.RoutingKey)

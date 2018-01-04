@@ -144,12 +144,26 @@ const (
 	alertNamespace = "alert_store"
 )
 
+const levelprefix = "levels"
+
 func (s *Service) Open() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	// Create DAO
 	store := s.StorageService.Store(alertNamespace)
+
+	alertinfokv, err := newAlertInfoKV(store)
+	if err != nil {
+		return err
+	}
+	alertInfoDAO = alertinfokv
+	//alertInfoDAO 有值后加载存储的级别
+	//这里的修改级别貌似用不上了。 而且有些问题。 所以先放在这里不用了。比如存储的topic ，在级别变后，反序列化有问题
+	//删除级别会带来很多处理问题
+	//func (l *Level) UnmarshalText(text []byte) error
+	//LevelStringsLoad()
+
 	specsDAO, err := newHandlerSpecKV(store)
 	if err != nil {
 		return err

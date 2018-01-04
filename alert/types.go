@@ -1,7 +1,6 @@
 package alert
 
 import (
-	"bytes"
 	"fmt"
 	"strings"
 	"time"
@@ -120,22 +119,39 @@ type TemplateData struct {
 type Level int
 
 const (
-	OK Level = iota
+	OK       Level = iota
 	Info
 	Warning
 	Critical
-	maxLevel
+	//maxLevel
 )
 
-const levelStrings = "OKINFOWARNINGCRITICAL"
+var maxLevel int = 4
 
-var levelBytes = []byte(levelStrings)
+var levelStrings = []string{"OK", "INFO", "WARNING", "CRITICAL"}
 
-var levelOffsets = []int{0, 2, 6, 13, 21}
+func MaxLevel() int {
+	return maxLevel
+}
+
+func LevelStringsUpdate(levels []string) {
+	maxLevel = len(levels)
+	levelStrings = levels
+}
+func LevelStringsGet() []string {
+	return levelStrings
+}
+
+//const levelStrings = "OKINFOWARNINGCRITICAL"
+
+//var levelBytes = []byte(levelStrings)
+
+//var levelOffsets = []int{0, 2, 6, 13, 21}
 
 func (l Level) String() string {
-	if l < maxLevel {
-		return levelStrings[levelOffsets[l]:levelOffsets[l+1]]
+	if l < Level(maxLevel) {
+		//return levelStrings[levelOffsets[l]:levelOffsets[l+1]]
+		return levelStrings[l]
 	}
 	return "unknown"
 }
@@ -145,13 +161,20 @@ func (l Level) MarshalText() ([]byte, error) {
 }
 
 func (l *Level) UnmarshalText(text []byte) error {
-	idx := bytes.Index(levelBytes, text)
-	if idx >= 0 {
-		for i := 0; i < int(maxLevel); i++ {
-			if idx == levelOffsets[i] {
-				*l = Level(i)
-				return nil
-			}
+	//idx := bytes.Index(levelBytes, text)
+	//if idx >= 0 {
+	//	for i := 0; i < int(maxLevel); i++ {
+	//		if idx == levelOffsets[i] {
+	//			*l = Level(i)
+	//			return nil
+	//		}
+	//	}
+	//}
+	for i := 0; i < maxLevel; i++ {
+		t := string(text)
+		if (levelStrings[i] == t) {
+			*l = Level(i)
+			return nil
 		}
 	}
 
