@@ -1028,7 +1028,7 @@ func (a *alertState) BufferedBatch(b edge.BufferedBatchMessage) (edge.Message, e
 		lmap := make(map[string][]int)
 		bpmap := make(map[string]edge.BatchPointMessage)
 		for _, bp := range b.Points() {
-			key := bp.Fields()["index"].(string) + "_" + bp.Fields()["identify"].(string)
+			key := bp.Fields()["entity"].(string) + "_" + bp.Fields()["index"].(string) + "_" + bp.Fields()["identify"].(string)
 			bpmap[key] = bp
 			_, e := lmap[key]
 			if !e {

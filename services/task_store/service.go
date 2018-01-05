@@ -29,6 +29,8 @@ const (
 	tasksPath         = "/tasks"
 	tasksPathAnchored = "/tasks/"
 
+	tasksPathBatch = "/tasksbatch"
+
 	templatesPath         = "/templates"
 	templatesPathAnchored = "/templates/"
 )
@@ -54,7 +56,7 @@ type Service struct {
 	snapshots        SnapshotDAO
 	routes           []httpd.Route
 	snapshotInterval time.Duration
-	StorageService   interface {
+	StorageService interface {
 		Store(namespace string) storage.Interface
 		Register(name string, store storage.StoreActioner)
 	}
@@ -112,6 +114,12 @@ func (ts *Service) Open() error {
 
 	// Define API routes
 	ts.routes = []httpd.Route{
+		{
+			Method:      "DELETE",
+			Pattern:     tasksPathBatch,
+			HandlerFunc: ts.handleDeleteTaskBatch,
+		},
+
 		{
 			Method:      "GET",
 			Pattern:     tasksPathAnchored,
@@ -1409,6 +1417,29 @@ func (ts *Service) handleDeleteTask(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+func (ts *Service) handleDeleteTaskBatch(w http.ResponseWriter, r *http.Request) {
+	var ids []string
+	dec := json.NewDecoder(r.Body)
+	err := dec.Decode(&ids)
+	if err != nil {
+		httpd.HttpError(w, err.Error(), true, http.StatusInternalServerError)
+		return
+	}
+
+	rs := make([]int, len(ids))
+	for i, id := range ids {
+		err1 := ts.deleteTask(id)
+		if err1 != nil {
+			rs[i] = 0
+			continue
+		}
+		rs[i] = 1
+	}
+
+	w.WriteHeader(http.StatusOK)
+	w.Write(httpd.MarshalJSON(rs, true))
 }
 
 func (ts *Service) deleteTask(id string) error {
