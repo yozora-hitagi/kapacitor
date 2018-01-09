@@ -90,7 +90,6 @@ type FreeWarn struct {
 type FreeWarnConf struct {
 	Indexs map[string]*WarnCondition `json:indexs`
 	Tags   map[string]string         `json:"tags"`
-	//Alertdir string                    `json:"alertdir"`
 }
 type WarnCondition struct {
 	Levels      map[string][]string `json:levels`
@@ -108,6 +107,7 @@ type ContentInfo struct {
 	Fields models.Fields
 	Level  int
 	Time   time.Time
+	Lambda string
 }
 
 type FreeWarnAlertInfo struct {
@@ -212,23 +212,16 @@ func (fw FreeWarn) getTouch_count(bp edge.FieldsTagsTimeGetter) int {
 	return fw.fwc.Indexs[key].Touch_count
 }
 
-func (fw FreeWarn) fmtAlert(bp edge.FieldsTagsTimeGetter, level int) (*FreeWarnAlertInfo, error) {
+func (fw FreeWarn) fmtAlert(bp edge.FieldsTagsTimeGetter, expr string, level int) (*FreeWarnAlertInfo, error) {
 
 	key := bp.Fields()["index"].(string) + "_" + bp.Fields()["identify"].(string)
-
-	//file := fmt.Sprintf("%s/%d_%s.log", fw.fwc.Alertdir, bp.Time().Unix(), ekey)
-	//f, err := os.OpenFile(file, os.O_WRONLY|os.O_APPEND|os.O_CREATE, 0666)
-	//if err != nil {
-	//	fw.diag.Error("failed to open file for alert logging", err, keyvalue.KV("file", file))
-	//	return
-	//}
-	//defer f.Close()
 
 	cinfo := &ContentInfo{
 		Tags:   fw.fwc.Tags,
 		Fields: bp.Fields(),
 		Level:  level,
 		Time:   bp.Time().Local(),
+		Lambda: expr,
 	}
 
 	tmpBuffer := fw.buf.Get().(*bytes.Buffer)
@@ -246,15 +239,12 @@ func (fw FreeWarn) fmtAlert(bp edge.FieldsTagsTimeGetter, level int) (*FreeWarnA
 	msg := tmpBuffer.String()
 
 	fwainfo := &FreeWarnAlertInfo{
-		level:    level,
-		content:  msg,
-		tags:     fw.fwc.Tags,
+		level:   level,
+		content: msg,
+		tags:    fw.fwc.Tags,
 	}
 
-	//f.Write([]byte(msg))
 	return fwainfo, nil
-
-	//fw.diag.FreeWarnLog(ekey + " -> " + msg)
 }
 
 func (fw FreeWarn) init() error {
@@ -263,21 +253,6 @@ func (fw FreeWarn) init() error {
 	if err != nil {
 		return err
 	}
-
-	//if !filepath.IsAbs(fw.fwc.Alertdir) {
-	//	return fmt.Errorf("log path must be absolute: %s is not absolute", fw.fwc.Alertdir)
-	//}
-	//_, err = os.Stat(fw.fwc.Alertdir)
-	//if err != nil {
-	//	//如果返回的错误为nil,说明文件或文件夹存在
-	//	//如果返回的错误类型使用os.IsNotExist()判断为true,说明文件或文件夹不存在
-	//	//如果返回的错误为其它类型,则不确定是否在存在
-	//	//if os.IsNotExist(err) {
-	//	//	return false, nil
-	//	//}
-	//	//return false, err
-	//	return fmt.Errorf("log path must be exist: %s maybe not exist", fw.fwc.Alertdir)
-	//}
 
 	for _, v := range fw.fwc.Indexs {
 
@@ -323,9 +298,6 @@ func (fw FreeWarn) init() error {
 			return err
 		}
 
-		//v.Touch = &FreeWarnTouchHandle{
-		//	touch_count: v.Touch_count,
-		//}
 		if v.Touch_count <= 0 {
 			v.Touch_count = 2
 		}
@@ -334,7 +306,7 @@ func (fw FreeWarn) init() error {
 	return nil
 }
 
-func (fw FreeWarn) determineLevel(bp edge.FieldsTagsTimeGetter) (int, bool) {
+func (fw FreeWarn) determineLevel(bp edge.FieldsTagsTimeGetter) (int, string, bool) {
 	key := bp.Fields()["index"].(string) + "_" + bp.Fields()["identify"].(string)
 	wcd := fw.fwc.Indexs[key]
 	for _, l := range wcd.LevelsKey {
@@ -342,10 +314,8 @@ func (fw FreeWarn) determineLevel(bp edge.FieldsTagsTimeGetter) (int, bool) {
 		expr := wcd.Expressions[l]
 		scpl := wcd.ScopePools[l]
 
-		//pass := 0
 		for j, e := range expr {
 			if p, err := EvalPredicate(e, scpl[j], bp); err != nil {
-				//pass = -1
 				fw.diag.Error("error evaluating expression ", err)
 			} else if p {
 				//改成 OR
@@ -353,21 +323,13 @@ func (fw FreeWarn) determineLevel(bp edge.FieldsTagsTimeGetter) (int, bool) {
 				if err != nil {
 					continue
 				}
-				return ln, true
+				expr := wcd.Nodes[l][j].ExpressionString()
+				return ln, expr, true
 			}
 		}
-
-		//if pass == 1 {
-		//	ln, err := strconv.Atoi(l)
-		//	if err != nil {
-		//		return -1, false
-		//	}
-		//	return ln, true
-		//}
-
 	}
 
-	return 0, true
+	return 0, "", true
 }
 
 /////////////
@@ -1105,6 +1067,7 @@ func (a *alertState) BufferedBatch(b edge.BufferedBatchMessage) (edge.Message, e
 	if nil != a.n.freeWarn && a.n.freeWarn.enabled() {
 		lmap := make(map[string]*FreeWarnTouchHandle)
 		bpmap := make(map[string]edge.BatchPointMessage)
+		emap := make(map[string]string)
 		for _, bp := range b.Points() {
 
 			entity, ok := bp.Fields()["entity"]
@@ -1139,9 +1102,10 @@ func (a *alertState) BufferedBatch(b edge.BufferedBatchMessage) (edge.Message, e
 				}
 				lmap[key].init()
 			}
-			l, ok := a.n.freeWarn.determineLevel(bp)
+			l, expr, ok := a.n.freeWarn.determineLevel(bp)
 			if ok {
 				lmap[key].push(l)
+				emap[key] = expr
 			}
 		}
 
@@ -1155,7 +1119,7 @@ func (a *alertState) BufferedBatch(b edge.BufferedBatchMessage) (edge.Message, e
 					//没有查到历史级别,且当前级别不是0（正常）,要告警
 					//或者 历史级别和当前级别不同，要告警
 					a.n.freeWarn.setLevel(k, newl)
-					fwainfo, err := a.n.freeWarn.fmtAlert(bpmap[k], newl)
+					fwainfo, err := a.n.freeWarn.fmtAlert(bpmap[k], emap[k], newl)
 					if err != nil {
 						a.n.freeWarn.diag.Error("create FWAlertInfo error", err)
 						continue
