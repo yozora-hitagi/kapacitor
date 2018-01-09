@@ -44,6 +44,9 @@ type NodeDiagnostic interface {
 
 	//UDF
 	UDFLog(s string)
+
+	FreeWarnLog(s string)
+
 }
 
 type nodeDiagnostic struct {

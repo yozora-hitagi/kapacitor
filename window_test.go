@@ -24,6 +24,7 @@ func (d *windowNodeDiagnostic) StartingBatchQuery(q string)                     
 func (d *windowNodeDiagnostic) LogBatchData(level, prefix string, batch edge.BufferedBatchMessage) {}
 func (d *windowNodeDiagnostic) LogPointData(level, prefix string, point edge.PointMessage)         {}
 func (d *windowNodeDiagnostic) UDFLog(s string)                                                    {}
+func (d *windowNodeDiagnostic) FreeWarnLog(s string)                                                    {}
 
 func TestWindowBufferByTime(t *testing.T) {
 	assert := assert.New(t)

@@ -119,6 +119,11 @@ func (ts *Service) Open() error {
 			Pattern:     tasksPathBatch,
 			HandlerFunc: ts.handleDeleteTaskBatch,
 		},
+		{
+			Method:      "POST",
+			Pattern:     tasksPathBatch,
+			HandlerFunc: ts.handleCreateTaskBatch,
+		},
 
 		{
 			Method:      "GET",
@@ -684,6 +689,376 @@ func (ts *Service) handleListTasks(w http.ResponseWriter, r *http.Request) {
 }
 
 var validTaskID = regexp.MustCompile(`^[-\._\p{L}0-9]+$`)
+
+//批量创建或者更新task
+func (ts *Service) handleCreateTaskBatch(w http.ResponseWriter, r *http.Request) {
+	var tasks []client.CreateTaskOptions
+	dec := json.NewDecoder(r.Body)
+	err := dec.Decode(&tasks)
+	if err != nil {
+		httpd.HttpError(w, "invalid JSON", true, http.StatusBadRequest)
+		return
+	}
+
+	rs := make([]int, len(tasks))
+	for i, task := range tasks {
+		if task.ID == "" {
+			//不允许taskID为空
+			rs[i] = -1
+			continue
+		}
+		if !validTaskID.MatchString(task.ID) {
+			rs[i] = -2
+			continue
+		}
+
+		// Check for existing task
+		original, err := ts.tasks.Get(task.ID)
+		if err == nil {
+			updated := original
+
+			if task.TemplateID != "" || updated.TemplateID != "" {
+				templateID := task.TemplateID
+				if templateID == "" {
+					templateID = updated.TemplateID
+				}
+				template, err := ts.templates.Get(templateID)
+				if err != nil {
+					rs[i] = 1
+					continue
+				}
+				if original.ID != updated.ID || original.TemplateID != updated.TemplateID {
+					if original.TemplateID != "" {
+						if err := ts.templates.DisassociateTask(original.TemplateID, original.ID); err != nil {
+							//failed to disassociate task with template
+							rs[i] = 2
+							continue
+						}
+					}
+					if err := ts.templates.AssociateTask(templateID, updated.ID); err != nil {
+						rs[i] = 3
+						continue
+					}
+				}
+				updated.Type = template.Type
+				updated.TICKscript = template.TICKscript
+				updated.TemplateID = templateID
+			} else {
+				// Only set type and script if not a templated task
+				// Set task type
+				switch task.Type {
+				case client.StreamTask:
+					updated.Type = StreamTask
+				case client.BatchTask:
+					updated.Type = BatchTask
+				}
+
+				oldPn, err := newProgramNodeFromTickscript(updated.TICKscript)
+				if err != nil {
+					rs[i] = 4
+					continue
+				}
+
+				// Set tick script
+				if task.TICKscript != "" {
+					updated.TICKscript = task.TICKscript
+
+					newPn, err := newProgramNodeFromTickscript(updated.TICKscript)
+					if err != nil {
+						rs[i] = 5
+						continue
+					}
+
+					if len(dbrpsFromProgram(oldPn)) > 0 && len(dbrpsFromProgram(newPn)) == 0 && len(task.DBRPs) == 0 {
+						rs[i] = 6
+						continue
+					}
+				}
+			}
+
+			pn, err := newProgramNodeFromTickscript(updated.TICKscript)
+			if err != nil {
+				rs[i] = 7
+				continue
+			}
+
+			if dbrps := dbrpsFromProgram(pn); len(dbrps) > 0 && len(task.DBRPs) > 0 {
+				rs[i] = 8
+				continue
+			} else if len(dbrps) > 0 {
+				// make consistent
+				updated.DBRPs = []DBRP{}
+				for _, dbrp := range dbrpsFromProgram(pn) {
+					updated.DBRPs = append(updated.DBRPs, DBRP{
+						Database:        dbrp.Database,
+						RetentionPolicy: dbrp.RetentionPolicy,
+					})
+				}
+			} else if len(task.DBRPs) > 0 {
+				updated.DBRPs = make([]DBRP, len(task.DBRPs))
+				for i, dbrp := range task.DBRPs {
+					updated.DBRPs[i] = DBRP{
+						Database:        dbrp.Database,
+						RetentionPolicy: dbrp.RetentionPolicy,
+					}
+				}
+			}
+
+			// Set status
+			previousStatus := updated.Status
+			switch task.Status {
+			case client.Enabled:
+				updated.Status = Enabled
+			case client.Disabled:
+				updated.Status = Disabled
+			}
+			statusChanged := previousStatus != updated.Status
+
+			// Set vars
+			if len(task.Vars) > 0 {
+				updated.Vars, err = ts.convertToServiceVars(task.Vars)
+				if err != nil {
+					rs[i] = 9
+					continue
+				}
+			}
+
+			// set task type from tickscript
+			switch tt := taskTypeFromProgram(pn); tt {
+			case client.StreamTask:
+				updated.Type = StreamTask
+			case client.BatchTask:
+				updated.Type = BatchTask
+			default:
+				rs[i] = 10
+				continue
+			}
+
+			// Validate task
+			_, err = ts.newKapacitorTask(updated)
+			if err != nil {
+				rs[i] = 11
+				continue
+			}
+
+			now := time.Now()
+			updated.Modified = now
+			if statusChanged && updated.Status == Enabled {
+				updated.LastEnabled = now
+			}
+
+			//这个位置应该一定相等，这里单次update 应该可以更改ID ， 现在批量，代码先保留
+			if original.ID != updated.ID {
+				// Task ID changed delete and re-create.
+				if err := ts.tasks.Create(updated); err != nil {
+					rs[i] = 12
+					continue
+				}
+				if err := ts.tasks.Delete(original.ID); err != nil {
+					ts.diag.Error(
+						"failed to delete old task definition during ID change",
+						err,
+						keyvalue.KV("oldID", original.ID),
+						keyvalue.KV("newID", updated.ID),
+					)
+				}
+				if original.Status == Enabled && updated.Status == Enabled {
+					// Stop task and start it under new name
+					ts.stopTask(original.ID)
+					if err := ts.startTask(updated); err != nil {
+						rs[i] = 13
+						continue
+					}
+				}
+			} else {
+				if err := ts.tasks.Replace(updated); err != nil {
+					rs[i] = 14
+					continue
+				}
+			}
+
+			if statusChanged {
+				// Enable/Disable task
+				switch updated.Status {
+				case Enabled:
+					vars.NumEnabledTasksVar.Add(1)
+					err = ts.startTask(updated)
+					if err != nil {
+						rs[i] = 15
+						continue
+					}
+				case Disabled:
+					vars.NumEnabledTasksVar.Add(-1)
+					ts.stopTask(original.ID)
+				}
+			}
+
+			_, err = ts.convertTask(updated, "formatted", "attributes", ts.TaskMasterLookup.Main())
+			if err != nil {
+				rs[i] = 16
+				continue
+			}
+
+			rs[i] = 0
+		} else {
+			newTask := Task{
+				ID: task.ID,
+			}
+			// Check for template ID
+			if task.TemplateID != "" {
+				template, err := ts.templates.Get(task.TemplateID)
+				if err != nil {
+					rs[i] = -3
+					continue
+				}
+				newTask.Type = template.Type
+				newTask.TICKscript = template.TICKscript
+				newTask.TemplateID = task.TemplateID
+				switch template.Type {
+				case StreamTask:
+					task.Type = client.StreamTask
+				case BatchTask:
+					task.Type = client.BatchTask
+				}
+				task.TICKscript = template.TICKscript
+				if err := ts.templates.AssociateTask(task.TemplateID, newTask.ID); err != nil {
+					//failed to associate task with template
+					rs[i] = -4
+					continue
+				}
+			} else {
+				// Set task type
+				switch task.Type {
+				case client.StreamTask:
+					newTask.Type = StreamTask
+				case client.BatchTask:
+					newTask.Type = BatchTask
+				}
+
+				// Set tick script
+				newTask.TICKscript = task.TICKscript
+				if newTask.TICKscript == "" {
+					//must provide TICKscript
+					rs[i] = -5
+					continue
+				}
+			}
+
+			// Set dbrps
+			newTask.DBRPs = make([]DBRP, len(task.DBRPs))
+			for i, dbrp := range task.DBRPs {
+				newTask.DBRPs[i] = DBRP{
+					Database:        dbrp.Database,
+					RetentionPolicy: dbrp.RetentionPolicy,
+				}
+			}
+
+			// Set status
+			switch task.Status {
+			case client.Enabled:
+				newTask.Status = Enabled
+			case client.Disabled:
+				newTask.Status = Disabled
+			default:
+				newTask.Status = Disabled
+			}
+
+			// Set vars
+			newTask.Vars, err = ts.convertToServiceVars(task.Vars)
+			if err != nil {
+				rs[i] = -6
+				continue
+			}
+			// Check for parity between tickscript and dbrp
+
+			pn, err := newProgramNodeFromTickscript(newTask.TICKscript)
+			if err != nil {
+				rs[i] = -7
+				continue
+			}
+
+			switch tt := taskTypeFromProgram(pn); tt {
+			case client.StreamTask:
+				newTask.Type = StreamTask
+			case client.BatchTask:
+				newTask.Type = BatchTask
+			default:
+				rs[i] = -8
+				continue
+			}
+
+			// Validate task
+			_, err = ts.newKapacitorTask(newTask)
+			if err != nil {
+				rs[i] = -9
+				continue
+			}
+
+			now := time.Now()
+			newTask.Created = now
+			newTask.Modified = now
+			if newTask.Status == Enabled {
+				newTask.LastEnabled = now
+			}
+
+			dbrps := []DBRP{}
+			for _, dbrp := range dbrpsFromProgram(pn) {
+				dbrps = append(dbrps, DBRP{
+					Database:        dbrp.Database,
+					RetentionPolicy: dbrp.RetentionPolicy,
+				})
+			}
+
+			if len(dbrps) == 0 && len(newTask.DBRPs) == 0 {
+				rs[i] = -10
+				continue
+			}
+
+			if len(dbrps) > 0 && len(newTask.DBRPs) > 0 {
+				rs[i] = -11
+				continue
+			}
+
+			if len(dbrps) != 0 {
+				newTask.DBRPs = dbrps
+			}
+
+			// Save task
+			err = ts.tasks.Create(newTask)
+			if err != nil {
+				rs[i] = -12
+				continue
+			}
+
+			// Count new task
+			vars.NumTasksVar.Add(1)
+			if newTask.Status == Enabled {
+				//Count new enabled task
+				vars.NumEnabledTasksVar.Add(1)
+				// Start task
+				err = ts.startTask(newTask)
+				if err != nil {
+					rs[i] = -13
+					continue
+				}
+			}
+
+			// Return task info
+			_, err = ts.convertTask(newTask, "formatted", "attributes", ts.TaskMasterLookup.Main())
+			if err != nil {
+				rs[i] = -14
+				continue
+			}
+
+			rs[i] = 0
+		}
+
+	}
+
+	w.WriteHeader(http.StatusOK)
+	w.Write(httpd.MarshalJSON(rs, true))
+
+}
 
 func (ts *Service) handleCreateTask(w http.ResponseWriter, r *http.Request) {
 	task := client.CreateTaskOptions{}

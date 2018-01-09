@@ -368,6 +368,10 @@ func (h *KapacitorHandler) UDFLog(s string) {
 	h.l.Info("UDF log", String("text", s))
 }
 
+func (h *KapacitorHandler) FreeWarnLog(s string) {
+	h.l.Info("FreeWarn", String("text", s))
+}
+
 // Alerta handler
 
 type AlertaHandler struct {
@@ -675,6 +679,7 @@ func (h *UDFServiceHandler) Error(msg string, err error, ctx ...keyvalue.T) {
 func (h *UDFServiceHandler) UDFLog(msg string) {
 	h.l.Info("UDF log", String("text", msg))
 }
+
 
 // Pushover handler
 
