@@ -80,6 +80,10 @@ type AlertNode struct {
 }
 
 /////////////freewarn/////////////
+const ENTITY = "entity"
+const INDEX = "index"
+const IDENTIFY = "identify"
+
 type FreeWarn struct {
 	conf         string
 	diag         NodeDiagnostic
@@ -97,7 +101,7 @@ type WarnCondition struct {
 	Content     string              `json:content`
 	ContentImpl *text.Template
 	LevelsKey   []string
-	Nodes       map[string][]*ast.LambdaNode
+	LambdaNodes map[string][]*ast.LambdaNode
 	Expressions map[string][]stateful.Expression
 	ScopePools  map[string][]stateful.ScopePool
 }
@@ -110,27 +114,9 @@ type ContentInfo struct {
 	Lambda string
 }
 
-type FreeWarnAlertInfo struct {
-	//alertkey string `json:alertkey`
-	entity   string `json:"entity"`
-	index    string `json:"index"`
-	identify string `json:"identify"`
-	level    int    `json:"level"`
-	content  string `json:"content"`
-	tags     map[string]string
-}
-
-type FreeWarnKey struct {
-	entity   string
-	index    string
-	identify string
-}
-
-func (fwk FreeWarnKey) key() string {
-	return fwk.index + "_" + fwk.identify
-}
-func (fwk FreeWarnKey) ekey() string {
-	return fwk.entity + "_" + fwk.key()
+type FreeWarnAlertAddInfo struct {
+	content string `json:"content"`
+	tags    map[string]string
 }
 
 type FreeWarnTouchHandle struct {
@@ -175,6 +161,12 @@ func (fw FreeWarn) enabled() bool {
 	return len(fw.conf) > 0
 }
 
+func (fw FreeWarn) valid(bp edge.BatchPointMessage) bool {
+	key := bp.Fields()[INDEX].(string) + "_" + bp.Fields()[IDENTIFY].(string)
+	_, ok := fw.fwc.Indexs[key]
+	return ok
+}
+
 func (fw FreeWarn) setLevel(key string, level int) {
 	ainfo := alertservice.AlertInfo{
 		ID:   key,
@@ -207,14 +199,30 @@ func (fw FreeWarn) getLevel(key string) int {
 	return v
 }
 
-func (fw FreeWarn) getTouch_count(bp edge.FieldsTagsTimeGetter) int {
-	key := bp.Fields()["index"].(string) + "_" + bp.Fields()["identify"].(string)
-	return fw.fwc.Indexs[key].Touch_count
+func (fw FreeWarn) getTouch(bp edge.FieldsTagsTimeGetter) *FreeWarnTouchHandle {
+	key := bp.Fields()[INDEX].(string) + "_" + bp.Fields()[IDENTIFY].(string)
+	index, ok := fw.fwc.Indexs[key]
+
+	touch := 2
+	if ok {
+		touch = index.Touch_count
+	}
+
+	fwth := &FreeWarnTouchHandle{
+		touch_count: touch,
+		touchkey:    make([]int, touch),
+	}
+	fwth.init()
+	return fwth
 }
 
-func (fw FreeWarn) fmtAlert(bp edge.FieldsTagsTimeGetter, expr string, level int) (*FreeWarnAlertInfo, error) {
+func (fw FreeWarn) fmtAlert(bp edge.FieldsTagsTimeGetter, expr string, level int) (*FreeWarnAlertAddInfo, error) {
 
-	key := bp.Fields()["index"].(string) + "_" + bp.Fields()["identify"].(string)
+	key := bp.Fields()[INDEX].(string) + "_" + bp.Fields()[IDENTIFY].(string)
+	index, ok := fw.fwc.Indexs[key]
+	if !ok {
+		return nil, errors.New(key + " not set")
+	}
 
 	cinfo := &ContentInfo{
 		Tags:   fw.fwc.Tags,
@@ -231,20 +239,49 @@ func (fw FreeWarn) fmtAlert(bp edge.FieldsTagsTimeGetter, expr string, level int
 	}()
 	tmpBuffer.Reset()
 
-	err1 := fw.fwc.Indexs[key].ContentImpl.Execute(tmpBuffer, cinfo)
+	err1 := index.ContentImpl.Execute(tmpBuffer, cinfo)
 	if err1 != nil {
 		return nil, err1
 	}
 
 	msg := tmpBuffer.String()
 
-	fwainfo := &FreeWarnAlertInfo{
-		level:   level,
+	fwainfo := &FreeWarnAlertAddInfo{
 		content: msg,
 		tags:    fw.fwc.Tags,
 	}
 
 	return fwainfo, nil
+}
+
+func (fw FreeWarn) determineLevel(bp edge.FieldsTagsTimeGetter) (int, string, bool) {
+	key := bp.Fields()[INDEX].(string) + "_" + bp.Fields()[IDENTIFY].(string)
+	wcd, ok := fw.fwc.Indexs[key]
+	if ok {
+		for _, l := range wcd.LevelsKey {
+
+			expr := wcd.Expressions[l]
+			scpl := wcd.ScopePools[l]
+
+			for j, e := range expr {
+				if p, err := EvalPredicate(e, scpl[j], bp); err != nil {
+					fw.diag.Error("error evaluating expression ", err)
+				} else if p {
+					//改成 OR
+					ln, err := strconv.Atoi(l)
+					if err != nil {
+						continue
+					}
+					expr := wcd.LambdaNodes[l][j].ExpressionString()
+					return ln, expr, true
+				}
+			}
+		}
+		return 0, "", true
+	} else {
+		return -1, "", false
+	}
+
 }
 
 func (fw FreeWarn) init() error {
@@ -257,7 +294,7 @@ func (fw FreeWarn) init() error {
 	for _, v := range fw.fwc.Indexs {
 
 		v.LevelsKey = make([]string, len(v.Levels))
-		v.Nodes = make(map[string][]*ast.LambdaNode)
+		v.LambdaNodes = make(map[string][]*ast.LambdaNode)
 		v.Expressions = make(map[string][]stateful.Expression)
 		v.ScopePools = make(map[string][]stateful.ScopePool)
 
@@ -286,7 +323,7 @@ func (fw FreeWarn) init() error {
 				scpl := stateful.NewScopePool(ast.FindReferenceVariables(n.Expression))
 				scplarr[i] = scpl
 			}
-			v.Nodes[k1] = nodearr
+			v.LambdaNodes[k1] = nodearr
 			v.Expressions[k1] = exprarr
 			v.ScopePools[k1] = scplarr
 
@@ -304,32 +341,6 @@ func (fw FreeWarn) init() error {
 	}
 
 	return nil
-}
-
-func (fw FreeWarn) determineLevel(bp edge.FieldsTagsTimeGetter) (int, string, bool) {
-	key := bp.Fields()["index"].(string) + "_" + bp.Fields()["identify"].(string)
-	wcd := fw.fwc.Indexs[key]
-	for _, l := range wcd.LevelsKey {
-
-		expr := wcd.Expressions[l]
-		scpl := wcd.ScopePools[l]
-
-		for j, e := range expr {
-			if p, err := EvalPredicate(e, scpl[j], bp); err != nil {
-				fw.diag.Error("error evaluating expression ", err)
-			} else if p {
-				//改成 OR
-				ln, err := strconv.Atoi(l)
-				if err != nil {
-					continue
-				}
-				expr := wcd.Nodes[l][j].ExpressionString()
-				return ln, expr, true
-			}
-		}
-	}
-
-	return 0, "", true
 }
 
 /////////////
@@ -1063,6 +1074,7 @@ func (a *alertState) BufferedBatch(b edge.BufferedBatchMessage) (edge.Message, e
 		return nil, nil
 	}
 
+	/////////////////////////////////////////////////
 	//不能用原来的 level ， 只能单独处理了
 	if nil != a.n.freeWarn && a.n.freeWarn.enabled() {
 		lmap := make(map[string]*FreeWarnTouchHandle)
@@ -1070,42 +1082,36 @@ func (a *alertState) BufferedBatch(b edge.BufferedBatchMessage) (edge.Message, e
 		emap := make(map[string]string)
 		for _, bp := range b.Points() {
 
-			entity, ok := bp.Fields()["entity"]
+			entity, ok := bp.Fields()[ENTITY]
 			if !ok {
 				a.n.freeWarn.diag.FreeWarnLog("entity tag no exist")
 				continue
 			}
-			index, ok := bp.Fields()["index"]
+			index, ok := bp.Fields()[INDEX]
 			if !ok {
 				a.n.freeWarn.diag.FreeWarnLog("index tag no exist " + entity.(string))
 				continue
 			}
-			identify, ok := bp.Fields()["identify"]
+			identify, ok := bp.Fields()[IDENTIFY]
 			if !ok {
 				a.n.freeWarn.diag.FreeWarnLog("identify tag no exist " + entity.(string) + " " + index.(string))
 				continue
 			}
 
-			fwkey := &FreeWarnKey{
-				entity:   entity.(string),
-				index:    index.(string),
-				identify: identify.(string),
+			if !a.n.freeWarn.valid(bp) {
+				continue
 			}
 
-			key := fwkey.ekey()
-			bpmap[key] = bp
+			key := entity.(string) + "_" + index.(string) + "_" + identify.(string)
 			_, e := lmap[key]
 			if !e {
-				lmap[key] = &FreeWarnTouchHandle{
-					touch_count: a.n.freeWarn.getTouch_count(bp),
-					touchkey:    make([]int, a.n.freeWarn.getTouch_count(bp)),
-				}
-				lmap[key].init()
+				lmap[key] = a.n.freeWarn.getTouch(bp)
 			}
 			l, expr, ok := a.n.freeWarn.determineLevel(bp)
 			if ok {
 				lmap[key].push(l)
 				emap[key] = expr
+				bpmap[key] = bp
 			}
 		}
 
@@ -1113,13 +1119,12 @@ func (a *alertState) BufferedBatch(b edge.BufferedBatchMessage) (edge.Message, e
 		for k, v := range lmap {
 			newl, ok := v.check()
 			if ok {
-				//两次相同， 开始做判断是否告警
 				l := a.n.freeWarn.getLevel(k)
 				if (l == -1 && newl != 0 ) || (l != newl) {
 					//没有查到历史级别,且当前级别不是0（正常）,要告警
 					//或者 历史级别和当前级别不同，要告警
 					a.n.freeWarn.setLevel(k, newl)
-					fwainfo, err := a.n.freeWarn.fmtAlert(bpmap[k], emap[k], newl)
+					ainfo, err := a.n.freeWarn.fmtAlert(bpmap[k], emap[k], newl)
 					if err != nil {
 						a.n.freeWarn.diag.Error("create FWAlertInfo error", err)
 						continue
@@ -1127,9 +1132,10 @@ func (a *alertState) BufferedBatch(b edge.BufferedBatchMessage) (edge.Message, e
 
 					bp := bpmap[k]
 					tags := bp.Tags().Copy()
-					tags["level"] = strconv.Itoa(fwainfo.level)
-					tags["content"] = fwainfo.content
-					for _k, _v := range fwainfo.tags {
+					tags["level"] = strconv.Itoa(newl)
+
+					tags["content"] = ainfo.content
+					for _k, _v := range ainfo.tags {
 						tags[_k] = _v
 					}
 					bp.SetTags(tags)
@@ -1152,6 +1158,7 @@ func (a *alertState) BufferedBatch(b edge.BufferedBatchMessage) (edge.Message, e
 		//b.SetBegin(newBegin)
 		return b, nil
 	}
+	/////////////////////////////////////////////////
 
 	begin := b.Begin()
 	id, err := a.n.renderID(begin.Name(), begin.GroupID(), begin.Tags())
