@@ -98,8 +98,8 @@ type FreeWarnConf struct {
 type WarnCondition struct {
 	Levels      map[string][]string `json:levels`
 	Touch_count int                 `json:"touch_count"`
-	Content     string              `json:content`
-	ContentImpl *text.Template
+	Content     map[string]string   `json:content`
+	ContentImpl map[string]*text.Template
 	LevelsKey   []string
 	LambdaNodes map[string][]*ast.LambdaNode
 	Expressions map[string][]stateful.Expression
@@ -216,7 +216,7 @@ func (fw FreeWarn) getTouch(bp edge.FieldsTagsTimeGetter) *FreeWarnTouchHandle {
 	return fwth
 }
 
-func (fw FreeWarn) fmtAlert(bp edge.FieldsTagsTimeGetter, expr string, level int) (*FreeWarnAlertAddInfo, error) {
+func (fw FreeWarn) fmtAlert(bp edge.FieldsTagsTimeGetter, expr string, newlevel int, oldlevel int) (*FreeWarnAlertAddInfo, error) {
 
 	key := bp.Fields()[INDEX].(string) + "_" + bp.Fields()[IDENTIFY].(string)
 	index, ok := fw.fwc.Indexs[key]
@@ -229,27 +229,38 @@ func (fw FreeWarn) fmtAlert(bp edge.FieldsTagsTimeGetter, expr string, level int
 		}, nil
 	}
 
-	cinfo := &ContentInfo{
-		Tags:   fw.fwc.Tags,
-		Fields: bp.Fields(),
-		Level:  level,
-		Time:   bp.Time().Local(),
-		Lambda: expr,
+	var msg string
+	level := newlevel
+	if level == 0 {
+		//说明是恢复告警， 没有恢复告警的的描述，所以要找到原来的级别
+		level = oldlevel
 	}
+	contentimpl, ok := index.ContentImpl[strconv.Itoa(level)]
+	if !ok {
+		msg = ""
+	} else {
+		cinfo := &ContentInfo{
+			Tags:   fw.fwc.Tags,
+			Fields: bp.Fields(),
+			Level:  newlevel,
+			Time:   bp.Time().Local(),
+			Lambda: expr,
+		}
 
-	tmpBuffer := fw.buf.Get().(*bytes.Buffer)
-	defer func() {
+		tmpBuffer := fw.buf.Get().(*bytes.Buffer)
+		defer func() {
+			tmpBuffer.Reset()
+			fw.buf.Put(tmpBuffer)
+		}()
 		tmpBuffer.Reset()
-		fw.buf.Put(tmpBuffer)
-	}()
-	tmpBuffer.Reset()
 
-	err1 := index.ContentImpl.Execute(tmpBuffer, cinfo)
-	if err1 != nil {
-		return nil, err1
+		err1 := contentimpl.Execute(tmpBuffer, cinfo)
+		if err1 != nil {
+			return nil, err1
+		}
+
+		msg = tmpBuffer.String()
 	}
-
-	msg := tmpBuffer.String()
 
 	return &FreeWarnAlertAddInfo{
 		content: msg,
@@ -335,9 +346,13 @@ func (fw FreeWarn) init() error {
 		}
 		sort.Sort(sort.Reverse(sort.StringSlice(v.LevelsKey)))
 
-		v.ContentImpl, err = text.New("content").Parse(v.Content)
-		if err != nil {
-			return err
+		v.ContentImpl = make(map[string]*text.Template)
+		for _k, _v := range v.Content {
+			ContentImpl, err := text.New("content").Parse(_v)
+			if err != nil {
+				return err
+			}
+			v.ContentImpl[_k] = ContentImpl
 		}
 
 		if v.Touch_count <= 0 {
@@ -1125,12 +1140,12 @@ func (a *alertState) BufferedBatch(b edge.BufferedBatchMessage) (edge.Message, e
 		for key, touch := range lmap {
 			newl, ok := touch.check()
 			if ok {
-				l := a.n.freeWarn.getLevel(key)
-				if (l == -1 && newl != 0 ) || (l != newl) {
+				oldl := a.n.freeWarn.getLevel(key)
+				if (oldl == -1 && newl != 0 ) || (oldl != newl) {
 					//没有查到历史级别,且当前级别不是0（正常）,要告警
 					//或者 历史级别和当前级别不同，要告警
 					a.n.freeWarn.setLevel(key, newl)
-					ainfo, err := a.n.freeWarn.fmtAlert(bpmap[key], emap[key], newl)
+					ainfo, err := a.n.freeWarn.fmtAlert(bpmap[key], emap[key], newl, oldl)
 					if err != nil {
 						a.n.freeWarn.diag.Error("create FWAlertInfo error", err)
 						continue
