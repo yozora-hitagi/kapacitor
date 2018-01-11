@@ -221,7 +221,12 @@ func (fw FreeWarn) fmtAlert(bp edge.FieldsTagsTimeGetter, expr string, level int
 	key := bp.Fields()[INDEX].(string) + "_" + bp.Fields()[IDENTIFY].(string)
 	index, ok := fw.fwc.Indexs[key]
 	if !ok {
-		return nil, errors.New(key + " not set")
+		//return nil, errors.New(key + " not set")
+		//指标不存在，也要产生恢复告警
+		return &FreeWarnAlertAddInfo{
+			content: "",
+			tags:    fw.fwc.Tags,
+		}, nil
 	}
 
 	cinfo := &ContentInfo{
@@ -246,12 +251,10 @@ func (fw FreeWarn) fmtAlert(bp edge.FieldsTagsTimeGetter, expr string, level int
 
 	msg := tmpBuffer.String()
 
-	fwainfo := &FreeWarnAlertAddInfo{
+	return &FreeWarnAlertAddInfo{
 		content: msg,
 		tags:    fw.fwc.Tags,
-	}
-
-	return fwainfo, nil
+	}, nil
 }
 
 func (fw FreeWarn) determineLevel(bp edge.FieldsTagsTimeGetter) (int, string, bool) {
@@ -279,7 +282,9 @@ func (fw FreeWarn) determineLevel(bp edge.FieldsTagsTimeGetter) (int, string, bo
 		}
 		return 0, "", true
 	} else {
-		return -1, "", false
+		//return -1, "", false
+		//指标被删除，返回正常，可以 进行恢复告警
+		return 0, "", true
 	}
 
 }
@@ -1098,9 +1103,10 @@ func (a *alertState) BufferedBatch(b edge.BufferedBatchMessage) (edge.Message, e
 				continue
 			}
 
-			if !a.n.freeWarn.valid(bp) {
-				continue
-			}
+			//指标配置不存在，继续走下去，可以进行恢复告警
+			//if !a.n.freeWarn.valid(bp) {
+			//	continue
+			//}
 
 			key := entity.(string) + "_" + index.(string) + "_" + identify.(string)
 			_, e := lmap[key]
@@ -1116,21 +1122,21 @@ func (a *alertState) BufferedBatch(b edge.BufferedBatchMessage) (edge.Message, e
 		}
 
 		li := list.New()
-		for k, v := range lmap {
-			newl, ok := v.check()
+		for key, touch := range lmap {
+			newl, ok := touch.check()
 			if ok {
-				l := a.n.freeWarn.getLevel(k)
+				l := a.n.freeWarn.getLevel(key)
 				if (l == -1 && newl != 0 ) || (l != newl) {
 					//没有查到历史级别,且当前级别不是0（正常）,要告警
 					//或者 历史级别和当前级别不同，要告警
-					a.n.freeWarn.setLevel(k, newl)
-					ainfo, err := a.n.freeWarn.fmtAlert(bpmap[k], emap[k], newl)
+					a.n.freeWarn.setLevel(key, newl)
+					ainfo, err := a.n.freeWarn.fmtAlert(bpmap[key], emap[key], newl)
 					if err != nil {
 						a.n.freeWarn.diag.Error("create FWAlertInfo error", err)
 						continue
 					}
 
-					bp := bpmap[k]
+					bp := bpmap[key]
 					tags := bp.Tags().Copy()
 					tags["level"] = strconv.Itoa(newl)
 
