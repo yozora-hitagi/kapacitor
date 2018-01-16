@@ -143,6 +143,11 @@ func (t FreeWarnTouchHandle) push(l int) {
 
 func (t FreeWarnTouchHandle) check() (int, bool) {
 	len := len(t.touchkey)
+
+	if t.touchkey[0] == -1 {
+		return -1, false
+	}
+
 	for i, _ := range t.touchkey {
 		if i < len-1 {
 			if t.touchkey[i] != t.touchkey[i+1] {
@@ -150,11 +155,9 @@ func (t FreeWarnTouchHandle) check() (int, bool) {
 			}
 		}
 	}
-	if t.touchkey[0] != -1 {
-		return t.touchkey[0], true
-	} else {
-		return -1, false
-	}
+
+	return t.touchkey[0], true
+
 }
 
 func (fw FreeWarn) enabled() bool {
