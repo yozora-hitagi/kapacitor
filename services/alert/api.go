@@ -37,6 +37,9 @@ const (
 	handlersRelation = "handlers"
 
 	levelsPath = alertsPath + "/levels"
+
+	alertinfoPathAnchored     = alertsPath + "/alertinfo/"
+	alertinfoBasePathAnchored = httpd.BasePath + alertinfoPathAnchored;
 )
 
 type apiServer struct {
@@ -103,6 +106,12 @@ func (s *apiServer) Open() error {
 			Pattern:     levelsPath,
 			HandlerFunc: s.handleLevelsSet,
 		},
+		{
+			// 读取alertinfo
+			Method:      "GET",
+			Pattern:     alertinfoPathAnchored,
+			HandlerFunc: s.handleAlertinfoGet,
+		},
 	}
 
 	return s.HTTPDService.AddRoutes(s.routes)
@@ -120,6 +129,20 @@ type sortedTopics []client.Topic
 func (s sortedTopics) Len() int               { return len(s) }
 func (s sortedTopics) Less(i int, j int) bool { return s[i].ID < s[j].ID }
 func (s sortedTopics) Swap(i int, j int)      { s[i], s[j] = s[j], s[i] }
+
+func (s *apiServer) handleAlertinfoGet(w http.ResponseWriter, r *http.Request) {
+	key := strings.TrimPrefix(r.URL.Path, alertinfoBasePathAnchored)
+	ainfo, err := GetAlertInfoDAO().Get(key)
+
+	if (err != nil) {
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("Not found!"))
+		return
+	}
+
+	w.WriteHeader(http.StatusOK)
+	w.Write(httpd.MarshalJSON(ainfo, false))
+}
 
 func (s *apiServer) handleLevelsGet(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
